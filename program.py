@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 
+from operator import sub
 from dreamcoder_programs.type import *
 from dreamcoder_programs.utilities import *
 
 from time import time
 import math
+
+# Naming
+DEFAULT_NAME = "default_name"
+VERBOSITY_0 = "verbosity_0"  # Least verbose
+VERBOSITY_1 = "verbosity_1"
 
 
 class InferenceFailure(Exception):
@@ -76,7 +82,7 @@ class Program(object):
 
         assert self.infer() == e.infer(), (
             "FATAL: uncurry has a bug. %s : %s, but uncurried to %s : %s"
-            % (self, self.infer(), e, e.infer())
+            % (self, self.infer(), e, e.infer(),)
         )
         return e
 
@@ -191,10 +197,21 @@ class Program(object):
                 return Index(int(e[1:]))
             if e in Primitive.GLOBALS:
                 return Primitive.GLOBALS[e]
+
             if e == "??" or e == "?":
                 return FragmentVariable.single
             if e == "<HOLE>":
                 return Hole.single
+            # Magic typing for floats.
+            try:
+                float_e = float(e)
+                Primitive(
+                    f"{float_e:g}", baseType("tfloat"), float_e, override_globals=True
+                )
+                return Primitive.GLOBALS[f"{float_e:g}"]
+            except ValueError:
+                raise ParseFailure((s, e))
+
             raise ParseFailure((s, e))
 
         return p(s)
@@ -382,11 +399,17 @@ class Application(Program):
     def visit(self, visitor, *arguments, **keywords):
         return visitor.application(self, *arguments, **keywords)
 
-    def show(self, isFunction):
+    def show(self, isFunction, substitution=None, alternate_names=None):
         if isFunction:
-            return "%s %s" % (self.f.show(True), self.x.show(False))
+            return "%s %s" % (
+                self.f.show(True, substitution, alternate_names=alternate_names),
+                self.x.show(False, substitution, alternate_names=alternate_names),
+            )
         else:
-            return "(%s %s)" % (self.f.show(True), self.x.show(False))
+            return "(%s %s)" % (
+                self.f.show(True, substitution, alternate_names=alternate_names),
+                self.x.show(False, substitution, alternate_names=alternate_names),
+            )
 
     def evaluate(self, environment):
         if self.isConditional:
@@ -470,7 +493,7 @@ class Index(Program):
     def __init__(self, i):
         self.i = i
 
-    def show(self, isFunction):
+    def show(self, isFunction, substitution=None, alternate_names=None):
         return "$%d" % self.i
 
     def __eq__(self, o):
@@ -609,8 +632,10 @@ class Abstraction(Program):
         self.body.annotateTypes(context, [v] + environment)
         self.annotatedType = arrow(v.applyMutable(context), self.body.annotatedType)
 
-    def show(self, isFunction):
-        return "(lambda %s)" % (self.body.show(False))
+    def show(self, isFunction, substitution=None, alternate_names=None):
+        return "(lambda %s)" % (
+            self.body.show(False, substitution, alternate_names=alternate_names)
+        )
 
     def evaluate(self, environment):
         return lambda x: self.body.evaluate([x] + environment)
@@ -666,12 +691,15 @@ class Abstraction(Program):
 class Primitive(Program):
     GLOBALS = {}
 
-    def __init__(self, name, ty, value):
+    def __init__(self, name, ty, value, override_globals=False, alternate_names=None):
         self.tp = ty
         self.name = name
         self.value = value
-        if name not in Primitive.GLOBALS:
+        if name not in Primitive.GLOBALS or override_globals:
             Primitive.GLOBALS[name] = self
+        self.alternate_names = (
+            {DEFAULT_NAME: name} if alternate_names is None else alternate_names
+        )
 
     @property
     def isPrimitive(self):
@@ -686,8 +714,13 @@ class Primitive(Program):
     def visit(self, visitor, *arguments, **keywords):
         return visitor.primitive(self, *arguments, **keywords)
 
-    def show(self, isFunction):
-        return self.name
+    def show(self, isFunction, substitution=None, alternate_names=None):
+        alternate_names = (
+            alternate_names if alternate_names is not None else DEFAULT_NAME
+        )
+        return self.alternate_names.get(
+            alternate_names, self.alternate_names[DEFAULT_NAME]
+        )
 
     def clone(self):
         return Primitive(self.name, self.tp, self.value)
@@ -766,8 +799,10 @@ class Invented(Program):
     def isInvented(self):
         return True
 
-    def show(self, isFunction):
-        return "#%s" % (self.body.show(False))
+    def show(self, isFunction, substitution=None, alternate_names=None):
+        return "#%s" % (
+            self.body.show(False, substitution, alternate_names=alternate_names)
+        )
 
     def visit(self, visitor, *arguments, **keywords):
         return visitor.invented(self, *arguments, **keywords)
@@ -844,7 +879,7 @@ class FragmentVariable(Program):
     def __init__(self):
         pass
 
-    def show(self, isFunction):
+    def show(self, isFunction, substitution=None, alternate_names=None):
         return "??"
 
     def __eq__(self, o):
@@ -907,7 +942,7 @@ class Hole(Program):
     def __init__(self):
         pass
 
-    def show(self, isFunction):
+    def show(self, isFunction, substitution=None, alternate_names=None):
         return "<HOLE>"
 
     @property
@@ -1116,6 +1151,7 @@ class PrettyVisitor(object):
         self.Lisp = Lisp
         self.numberOfVariables = 0
         self.freeVariables = {}
+        self.substitution_dict = substitution_dict
 
         self.variableNames = ["x", "y", "z", "u", "v", "w"]
         self.variableNames += [chr(ord("a") + j) for j in range(20)]
@@ -1159,6 +1195,7 @@ class PrettyVisitor(object):
     def abstraction(self, e, environment, isFunction, isAbstraction):
         toplevel = self.toplevel
         self.toplevel = False
+
         if not self.Lisp:
             # Invent a new variable
             v = self.makeVariable()
@@ -1298,7 +1335,7 @@ def untokeniseProgram(l):
 
 
 if __name__ == "__main__":
-    from dreamcoder_programs.domains.arithmetic.arithmeticPrimitives import *
+    from dreamcoder.domains.arithmetic.arithmeticPrimitives import *
 
     e = Program.parse(
         "(#(lambda (?? (+ 1 $0))) (lambda (?? (+ 1 $0))) (lambda (?? (+ 1 $0))) - * (+ +))"
