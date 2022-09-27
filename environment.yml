@@ -1,16 +1,11 @@
-name: drawingtasks
+name: dreamcoder_programs
 channels:
   - anaconda
-  - conda-forge
 dependencies:
   - python=3.7.7
   - graphviz
   - imageio
   - numpy
-  - Pillow
   - pytest
   - pip
   - frozendict
-  - pycairo
-  - pip:
-    - phx-class-registry
